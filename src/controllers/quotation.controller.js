@@ -559,26 +559,25 @@ export async function sendQuotationEmail(req, res) {
         replyTo: q.senderEmail || undefined,
       });
     } catch (mailErr) {
-      console.error("sendQuotationEmail mail error:", mailErr);
+      console.error("sendQuotationEmail mail error:", mailErr.message);
       emailSent = false;
-      emailError = mailErr.message || String(mailErr);
+      emailError = mailErr.message;
     }
 
-    // Only mark as "sent" if the email actually went through.
-    if (emailSent) {
-      await Quotation.findByIdAndUpdate(q._id, { status: "sent", sentAt: new Date() });
-      const msg = q.senderEmail
-        ? `Quotation emailed to ${q.clientEmail} (cc: ${q.senderEmail})`
-        : `Quotation emailed to ${q.clientEmail}`;
-      return res.json({ success: true, emailSent: true, message: msg });
+    await Quotation.findByIdAndUpdate(q._id, { status: "sent", sentAt: new Date() });
+
+    if (!emailSent) {
+      return res.status(200).json({
+        success: true,
+        emailSent: false,
+        message: `Status marked as Sent, but email failed: ${emailError}`,
+      });
     }
 
-    // Email failed — return a clear error so the UI shows it.
-    return res.status(502).json({
-      success: false,
-      emailSent: false,
-      message: `Email could not be sent: ${emailError}`,
-    });
+    const msg = q.senderEmail
+      ? `Quotation emailed to ${q.clientEmail} (cc: ${q.senderEmail})`
+      : `Quotation emailed to ${q.clientEmail}`;
+    return res.json({ success: true, emailSent: true, message: msg });
   } catch (err) {
     console.error("sendQuotationEmail error:", err);
     return res.status(500).json({ success: false, message: err.message || "Server error" });
