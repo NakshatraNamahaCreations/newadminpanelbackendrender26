@@ -1,18 +1,30 @@
 import nodemailer from "nodemailer";
+import dns from "dns";
 
-/* ── Build Hostinger transporter (pooled, with timeouts) ── */
+/* ── Prefer IPv4 globally — Render's egress has no IPv6 route,
+   so DNS A records must be used. Without this, nodemailer can
+   pick an AAAA record and fail with ESOCKET ENETUNREACH. */
+dns.setDefaultResultOrder("ipv4first");
+
+/* ── Strict IPv4 lookup for SMTP sockets ── */
+const ipv4OnlyLookup = (hostname, opts, cb) => {
+  if (typeof opts === "function") { cb = opts; opts = {}; }
+  return dns.lookup(hostname, { ...opts, family: 4, all: false }, cb);
+};
+
+/* ── Build Hostinger transporter (pooled, IPv4-only, with timeouts) ── */
 const makeHostingerTransport = () =>
   nodemailer.createTransport({
     host:   process.env.EMAIL_HOST || "smtp.hostinger.com",
-    port:   465,
+    port:   Number(process.env.EMAIL_PORT) || 465,
     secure: true,
-    family: 4,
     pool:   true,
     maxConnections: 3,
     maxMessages:    100,
-    connectionTimeout: 7000,   // 7s to open TCP
-    greetingTimeout:   5000,   // 5s for SMTP greeting
-    socketTimeout:     15000,  // 15s overall socket idle limit
+    connectionTimeout: 10000,
+    greetingTimeout:   8000,
+    socketTimeout:     20000,
+    dnsLookup: ipv4OnlyLookup,
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
@@ -20,20 +32,24 @@ const makeHostingerTransport = () =>
     tls: { rejectUnauthorized: false },
   });
 
-/* ── Build Gmail transporter (pooled, with timeouts) ── */
+/* ── Build Gmail transporter (pooled, IPv4-only, with timeouts) ── */
 const makeGmailTransport = () =>
   nodemailer.createTransport({
-    service: "gmail",
+    host:   "smtp.gmail.com",
+    port:   465,
+    secure: true,
     pool:    true,
     maxConnections: 3,
     maxMessages:    100,
-    connectionTimeout: 7000,
-    greetingTimeout:   5000,
-    socketTimeout:     15000,
+    connectionTimeout: 10000,
+    greetingTimeout:   8000,
+    socketTimeout:     20000,
+    dnsLookup: ipv4OnlyLookup,
     auth: {
       user: process.env.GMAIL_USER,
       pass: process.env.GMAIL_APP_PASS,
     },
+    tls: { rejectUnauthorized: false },
   });
 
 /* ── Cached singleton transporters (created lazily on first use) ── */
