@@ -1,8 +1,11 @@
 node_modules/
 .env
+.env.*
+!.env.example
 .claude/
 uploads/
 *.log
+*.zip
 server.log
 server-err.log
 server_err.log

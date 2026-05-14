@@ -426,6 +426,12 @@ export async function sendQuotationEmail(req, res) {
     };
     const bi = branchInfo[q.branch] || branchInfo.Bangalore;
 
+    const firstName  = String(q.clientName || "").trim().split(/\s+/)[0] || "there";
+    const greetingName = q.clientName ? q.clientName : "Valued Client";
+    const validUntilSentence = q.validUntil
+      ? ` This proposal is valid until <strong>${new Date(q.validUntil).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</strong>.`
+      : "";
+
     const html = `
 <div style="font-family:Arial,sans-serif;max-width:660px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">
   <!-- Header -->
@@ -443,6 +449,22 @@ export async function sendQuotationEmail(req, res) {
         </td>
       </tr>
     </table>
+  </div>
+
+  <!-- Professional Cover Note -->
+  <div style="padding:28px 32px 8px;background:#ffffff">
+    <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:12px">
+      Dear ${greetingName},
+    </div>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.75;color:#334155">
+      Thank you for considering <strong style="color:#0f172a">Nakshatra Namaha Creations</strong> for your project${q.clientCompany ? ` at <strong style="color:#0f172a">${q.clientCompany}</strong>` : ""}. We truly appreciate the opportunity to be of service.
+    </p>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.75;color:#334155">
+      Please find enclosed our formal quotation <strong style="color:#7c3aed">${q.quoteNumber}</strong>, prepared with careful attention to your requirements. The details below outline the scope of work, deliverables, and the corresponding investment.${validUntilSentence}
+    </p>
+    <p style="margin:0 0 18px;font-size:14px;line-height:1.75;color:#334155">
+      Should you have any questions, require clarifications, or wish to discuss any aspect further, we would be delighted to assist. We look forward to the privilege of partnering with you and delivering a result that exceeds your expectations.
+    </p>
   </div>
 
   <!-- Bill To + Meta -->
@@ -497,6 +519,18 @@ export async function sendQuotationEmail(req, res) {
   ${q.notes ? `<div style="margin:0 32px 16px;background:#f8fafc;border-radius:8px;padding:14px 16px;font-size:13px;color:#475569;border-left:3px solid #7c3aed"><strong>Notes:</strong><br/><span style="line-height:1.7">${q.notes.replace(/\n/g, "<br/>")}</span></div>` : ""}
   ${q.terms ? `<div style="margin:0 32px 24px;background:#fefce8;border-radius:8px;padding:14px 16px;font-size:12px;color:#713f12;border-left:3px solid #eab308"><strong>Terms & Conditions:</strong><br/><span style="line-height:1.7">${q.terms.replace(/\n/g, "<br/>")}</span></div>` : ""}
 
+  <!-- Closing signature -->
+  <div style="padding:8px 32px 26px;background:#ffffff">
+    <p style="margin:0 0 12px;font-size:14px;line-height:1.75;color:#334155">
+      We thank you once again for the opportunity and look forward to your kind confirmation. Please feel free to reach out to us${q.senderEmail ? ` directly at <a href="mailto:${q.senderEmail}" style="color:#7c3aed;text-decoration:none;font-weight:600">${q.senderEmail}</a>` : ""} for any assistance.
+    </p>
+    <div style="margin-top:14px;font-size:14px;color:#0f172a">
+      <div style="font-weight:700">Warm regards,</div>
+      <div style="font-weight:800;margin-top:4px">Team Nakshatra Namaha Creations Pvt. Ltd.</div>
+      <div style="font-size:12px;color:#64748b;margin-top:2px">Website &amp; Digital Solutions &nbsp;•&nbsp; ${q.branch} Office</div>
+    </div>
+  </div>
+
   <!-- Footer -->
   <div style="background:#0f172a;padding:20px 32px">
     <table width="100%" cellpadding="0" cellspacing="0">
@@ -519,6 +553,7 @@ export async function sendQuotationEmail(req, res) {
     try {
       await sendEmail({
         to:      q.clientEmail,
+        cc:      q.senderEmail || undefined,
         subject: `Quotation ${q.quoteNumber} from NNC — ${q.clientName}`,
         html,
         replyTo: q.senderEmail || undefined,
@@ -539,7 +574,10 @@ export async function sendQuotationEmail(req, res) {
       });
     }
 
-    return res.json({ success: true, emailSent: true, message: "Quotation emailed successfully" });
+    const msg = q.senderEmail
+      ? `Quotation emailed to ${q.clientEmail} (cc: ${q.senderEmail})`
+      : `Quotation emailed to ${q.clientEmail}`;
+    return res.json({ success: true, emailSent: true, message: msg });
   } catch (err) {
     console.error("sendQuotationEmail error:", err);
     return res.status(500).json({ success: false, message: err.message || "Server error" });
