@@ -550,34 +550,40 @@ export async function sendQuotationEmail(req, res) {
 
     let emailSent = true;
     let emailError = null;
+    let transport  = null;
     try {
-      await sendEmail({
+      const info = await sendEmail({
         to:      q.clientEmail,
         cc:      q.senderEmail || undefined,
         subject: `Quotation ${q.quoteNumber} from NNC — ${q.clientName}`,
         html,
         replyTo: q.senderEmail || undefined,
       });
+      transport = info?.transport || null;
     } catch (mailErr) {
       console.error("sendQuotationEmail mail error:", mailErr.message);
       emailSent = false;
       emailError = mailErr.message;
     }
 
-    await Quotation.findByIdAndUpdate(q._id, { status: "sent", sentAt: new Date() });
-
-    if (!emailSent) {
-      return res.status(200).json({
+    if (emailSent) {
+      await Quotation.findByIdAndUpdate(q._id, { status: "sent", sentAt: new Date() });
+      const recipients = q.senderEmail
+        ? `${q.clientEmail} (cc: ${q.senderEmail})`
+        : q.clientEmail;
+      return res.json({
         success: true,
-        emailSent: false,
-        message: `Status marked as Sent, but email failed: ${emailError}`,
+        emailSent: true,
+        message: `Quotation emailed via ${transport || "smtp"} to ${recipients}`,
       });
     }
 
-    const msg = q.senderEmail
-      ? `Quotation emailed to ${q.clientEmail} (cc: ${q.senderEmail})`
-      : `Quotation emailed to ${q.clientEmail}`;
-    return res.json({ success: true, emailSent: true, message: msg });
+    // Email failed — do NOT silently mark as sent. Return 502 so the UI shows the real error.
+    return res.status(502).json({
+      success:   false,
+      emailSent: false,
+      message:   emailError || "Email delivery failed",
+    });
   } catch (err) {
     console.error("sendQuotationEmail error:", err);
     return res.status(500).json({ success: false, message: err.message || "Server error" });
