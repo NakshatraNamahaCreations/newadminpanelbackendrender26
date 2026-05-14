@@ -111,6 +111,48 @@ app.get("/", (req, res) => {
   });
 });
 
+/* ─── Email diagnostics ─────────────────────────────────────
+   GET  /api/email-status            → which transports are configured
+   POST /api/email-test  {to:"..."}  → send a real test mail, return SMTP error if any
+   These endpoints are intentionally minimal & do not leak secrets. */
+app.get("/api/email-status", (req, res) => {
+  const mask = (v) => (v ? `${v.slice(0, 3)}…${v.slice(-2)}` : null);
+  return res.json({
+    success: true,
+    hostinger: {
+      ready: Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS && process.env.EMAIL_HOST),
+      host:  process.env.EMAIL_HOST || null,
+      port:  process.env.EMAIL_PORT || null,
+      user:  process.env.EMAIL_USER || null,
+      passHint: mask(process.env.EMAIL_PASS),
+    },
+    gmail: {
+      ready: Boolean(process.env.GMAIL_USER && process.env.GMAIL_APP_PASS),
+      user:  process.env.GMAIL_USER || null,
+      passHint: mask(process.env.GMAIL_APP_PASS),
+    },
+  });
+});
+
+app.post("/api/email-test", async (req, res) => {
+  const to = req.body?.to;
+  if (!to || !/^\S+@\S+\.\S+$/.test(to)) {
+    return res.status(400).json({ success: false, message: "Provide a valid 'to' email in JSON body" });
+  }
+  try {
+    const { default: sendEmail } = await import("./src/utils/sendEmail.js");
+    await sendEmail({
+      to,
+      subject: "NNC CRM — Email Test ✓",
+      html: `<p>This is a test email from the NNC CRM backend.</p><p>If you got this, SMTP works. Sent at ${new Date().toISOString()}.</p>`,
+    });
+    return res.json({ success: true, message: `Test email sent to ${to}` });
+  } catch (err) {
+    console.error("[email-test] failed:", err);
+    return res.status(500).json({ success: false, message: err.message || "Send failed" });
+  }
+});
+
 app.use("/uploads", express.static(uploadsPath));
 
 /* ── Public website webhook (no auth, open CORS) ───────────── */
