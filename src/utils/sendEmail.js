@@ -1,30 +1,18 @@
 import nodemailer from "nodemailer";
 import dns from "dns";
 
-/* ── Prefer IPv4 globally — Render's egress has no IPv6 route,
-   so DNS A records must be used. Without this, nodemailer can
-   pick an AAAA record and fail with ESOCKET ENETUNREACH. */
+/* Render's free-tier egress only has IPv4 routing.
+   Without this, DNS may return an AAAA record and the
+   SMTP socket fails with ESOCKET ENETUNREACH before auth. */
 dns.setDefaultResultOrder("ipv4first");
 
-/* ── Strict IPv4 lookup for SMTP sockets ── */
-const ipv4OnlyLookup = (hostname, opts, cb) => {
-  if (typeof opts === "function") { cb = opts; opts = {}; }
-  return dns.lookup(hostname, { ...opts, family: 4, all: false }, cb);
-};
-
-/* ── Build Hostinger transporter (pooled, IPv4-only, with timeouts) ── */
+/* ── Build Hostinger transporter ── */
 const makeHostingerTransport = () =>
   nodemailer.createTransport({
     host:   process.env.EMAIL_HOST || "smtp.hostinger.com",
     port:   Number(process.env.EMAIL_PORT) || 465,
-    secure: true,
-    pool:   true,
-    maxConnections: 3,
-    maxMessages:    100,
-    connectionTimeout: 10000,
-    greetingTimeout:   8000,
-    socketTimeout:     20000,
-    dnsLookup: ipv4OnlyLookup,
+    secure: true,           // SSL on 465
+    family: 4,              // force IPv4
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
@@ -32,19 +20,13 @@ const makeHostingerTransport = () =>
     tls: { rejectUnauthorized: false },
   });
 
-/* ── Build Gmail transporter (pooled, IPv4-only, with timeouts) ── */
+/* ── Build Gmail transporter ── */
 const makeGmailTransport = () =>
   nodemailer.createTransport({
     host:   "smtp.gmail.com",
     port:   465,
     secure: true,
-    pool:    true,
-    maxConnections: 3,
-    maxMessages:    100,
-    connectionTimeout: 10000,
-    greetingTimeout:   8000,
-    socketTimeout:     20000,
-    dnsLookup: ipv4OnlyLookup,
+    family: 4,              // force IPv4
     auth: {
       user: process.env.GMAIL_USER,
       pass: process.env.GMAIL_APP_PASS,
@@ -52,23 +34,9 @@ const makeGmailTransport = () =>
     tls: { rejectUnauthorized: false },
   });
 
-/* ── Cached singleton transporters (created lazily on first use) ── */
-let hostingerTransporter = null;
-let gmailTransporter     = null;
-
-const getHostinger = () => {
-  if (!hostingerTransporter) hostingerTransporter = makeHostingerTransport();
-  return hostingerTransporter;
-};
-const getGmail = () => {
-  if (!gmailTransporter) gmailTransporter = makeGmailTransport();
-  return gmailTransporter;
-};
-
 /**
  * Send an email.
  * Tries Hostinger SMTP first; falls back to Gmail if Hostinger fails.
- * Uses pooled, cached transporters so subsequent sends reuse the TCP connection.
  */
 const sendEmail = async ({ to, subject, html, replyTo, cc, bcc }) => {
   const hostingerReady =
@@ -88,43 +56,39 @@ const sendEmail = async ({ to, subject, html, replyTo, cc, bcc }) => {
     return opts;
   };
 
-  const errors = [];
-
-  /* 1️⃣  Try Hostinger (cached transporter, no verify() round-trip) */
+  /* 1️⃣  Try Hostinger */
   if (hostingerReady) {
     try {
-      const info = await getHostinger().sendMail(buildOptions(process.env.EMAIL_USER));
+      const transporter = makeHostingerTransport();
+      await transporter.verify();                          // quick auth check
+      const info = await transporter.sendMail(buildOptions(process.env.EMAIL_USER));
       console.log(`[sendEmail] Sent via Hostinger to ${to}`);
       return info;
     } catch (err) {
       const detail = `${err.code || ""} ${err.responseCode || ""} ${err.response || err.message || ""}`.trim();
       console.warn(`[sendEmail] Hostinger failed: ${detail}`);
-      errors.push(`Hostinger → ${detail}`);
-      try { hostingerTransporter?.close(); } catch {}
-      hostingerTransporter = null;
     }
-  } else {
-    errors.push("Hostinger → not configured (missing EMAIL_USER/EMAIL_PASS/EMAIL_HOST)");
   }
 
-  /* 2️⃣  Fallback: Gmail (cached transporter) */
+  /* 2️⃣  Fallback: Gmail */
   if (gmailReady) {
     try {
-      const info = await getGmail().sendMail(buildOptions(process.env.GMAIL_USER));
+      const transporter = makeGmailTransport();
+      const info = await transporter.sendMail(buildOptions(process.env.GMAIL_USER));
       console.log(`[sendEmail] Sent via Gmail to ${to}`);
       return info;
     } catch (err) {
       const detail = `${err.code || ""} ${err.responseCode || ""} ${err.response || err.message || ""}`.trim();
-      console.error(`[sendEmail] Gmail failed: ${detail}`);
-      errors.push(`Gmail → ${detail}`);
-      try { gmailTransporter?.close(); } catch {}
-      gmailTransporter = null;
+      console.error(`[sendEmail] Gmail also failed: ${detail}`);
+      throw new Error(
+        `Email delivery failed.\n` +
+        `Hostinger: check EMAIL_USER/EMAIL_PASS and that SMTP is enabled in hPanel.\n` +
+        `Gmail: enable 2-Step Verification on ${process.env.GMAIL_USER} and regenerate the App Password.`
+      );
     }
-  } else {
-    errors.push("Gmail → not configured (missing GMAIL_USER/GMAIL_APP_PASS)");
   }
 
-  throw new Error(`Email delivery failed. ${errors.join(" | ")}`);
+  throw new Error("All email transports failed.");
 };
 
 export default sendEmail;
