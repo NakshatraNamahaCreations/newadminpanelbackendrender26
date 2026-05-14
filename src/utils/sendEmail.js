@@ -1,12 +1,18 @@
 import nodemailer from "nodemailer";
 
-/* ── Build Hostinger transporter ── */
+/* ── Build Hostinger transporter (pooled, with timeouts) ── */
 const makeHostingerTransport = () =>
   nodemailer.createTransport({
     host:   process.env.EMAIL_HOST || "smtp.hostinger.com",
     port:   465,
-    secure: true,           // SSL on 465
-    family: 4,              // force IPv4
+    secure: true,
+    family: 4,
+    pool:   true,
+    maxConnections: 3,
+    maxMessages:    100,
+    connectionTimeout: 7000,   // 7s to open TCP
+    greetingTimeout:   5000,   // 5s for SMTP greeting
+    socketTimeout:     15000,  // 15s overall socket idle limit
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
@@ -14,19 +20,39 @@ const makeHostingerTransport = () =>
     tls: { rejectUnauthorized: false },
   });
 
-/* ── Build Gmail transporter ── */
+/* ── Build Gmail transporter (pooled, with timeouts) ── */
 const makeGmailTransport = () =>
   nodemailer.createTransport({
     service: "gmail",
+    pool:    true,
+    maxConnections: 3,
+    maxMessages:    100,
+    connectionTimeout: 7000,
+    greetingTimeout:   5000,
+    socketTimeout:     15000,
     auth: {
       user: process.env.GMAIL_USER,
       pass: process.env.GMAIL_APP_PASS,
     },
   });
 
+/* ── Cached singleton transporters (created lazily on first use) ── */
+let hostingerTransporter = null;
+let gmailTransporter     = null;
+
+const getHostinger = () => {
+  if (!hostingerTransporter) hostingerTransporter = makeHostingerTransport();
+  return hostingerTransporter;
+};
+const getGmail = () => {
+  if (!gmailTransporter) gmailTransporter = makeGmailTransport();
+  return gmailTransporter;
+};
+
 /**
  * Send an email.
  * Tries Hostinger SMTP first; falls back to Gmail if Hostinger fails.
+ * Uses pooled, cached transporters so subsequent sends reuse the TCP connection.
  */
 const sendEmail = async ({ to, subject, html, replyTo, cc, bcc }) => {
   const hostingerReady =
@@ -46,28 +72,30 @@ const sendEmail = async ({ to, subject, html, replyTo, cc, bcc }) => {
     return opts;
   };
 
-  /* 1️⃣  Try Hostinger */
+  /* 1️⃣  Try Hostinger (cached transporter, no verify() round-trip) */
   if (hostingerReady) {
     try {
-      const transporter = makeHostingerTransport();
-      await transporter.verify();                          // quick auth check
-      const info = await transporter.sendMail(buildOptions(process.env.EMAIL_USER));
+      const info = await getHostinger().sendMail(buildOptions(process.env.EMAIL_USER));
       console.log(`[sendEmail] Sent via Hostinger to ${to}`);
       return info;
     } catch (err) {
       console.warn(`[sendEmail] Hostinger failed (${err.message}), trying Gmail…`);
+      // Drop the dead pool — next call will rebuild
+      try { hostingerTransporter?.close(); } catch {}
+      hostingerTransporter = null;
     }
   }
 
-  /* 2️⃣  Fallback: Gmail */
+  /* 2️⃣  Fallback: Gmail (cached transporter) */
   if (gmailReady) {
     try {
-      const transporter = makeGmailTransport();
-      const info = await transporter.sendMail(buildOptions(process.env.GMAIL_USER));
+      const info = await getGmail().sendMail(buildOptions(process.env.GMAIL_USER));
       console.log(`[sendEmail] Sent via Gmail to ${to}`);
       return info;
     } catch (err) {
       console.error(`[sendEmail] Gmail also failed: ${err.message}`);
+      try { gmailTransporter?.close(); } catch {}
+      gmailTransporter = null;
       throw new Error(
         `Email delivery failed.\n` +
         `Hostinger: check EMAIL_USER/EMAIL_PASS and that SMTP is enabled in hPanel.\n` +
