@@ -72,6 +72,8 @@ const sendEmail = async ({ to, subject, html, replyTo, cc, bcc }) => {
     return opts;
   };
 
+  const errors = [];
+
   /* 1️⃣  Try Hostinger (cached transporter, no verify() round-trip) */
   if (hostingerReady) {
     try {
@@ -79,11 +81,14 @@ const sendEmail = async ({ to, subject, html, replyTo, cc, bcc }) => {
       console.log(`[sendEmail] Sent via Hostinger to ${to}`);
       return info;
     } catch (err) {
-      console.warn(`[sendEmail] Hostinger failed (${err.message}), trying Gmail…`);
-      // Drop the dead pool — next call will rebuild
+      const detail = `${err.code || ""} ${err.responseCode || ""} ${err.response || err.message || ""}`.trim();
+      console.warn(`[sendEmail] Hostinger failed: ${detail}`);
+      errors.push(`Hostinger → ${detail}`);
       try { hostingerTransporter?.close(); } catch {}
       hostingerTransporter = null;
     }
+  } else {
+    errors.push("Hostinger → not configured (missing EMAIL_USER/EMAIL_PASS/EMAIL_HOST)");
   }
 
   /* 2️⃣  Fallback: Gmail (cached transporter) */
@@ -93,18 +98,17 @@ const sendEmail = async ({ to, subject, html, replyTo, cc, bcc }) => {
       console.log(`[sendEmail] Sent via Gmail to ${to}`);
       return info;
     } catch (err) {
-      console.error(`[sendEmail] Gmail also failed: ${err.message}`);
+      const detail = `${err.code || ""} ${err.responseCode || ""} ${err.response || err.message || ""}`.trim();
+      console.error(`[sendEmail] Gmail failed: ${detail}`);
+      errors.push(`Gmail → ${detail}`);
       try { gmailTransporter?.close(); } catch {}
       gmailTransporter = null;
-      throw new Error(
-        `Email delivery failed.\n` +
-        `Hostinger: check EMAIL_USER/EMAIL_PASS and that SMTP is enabled in hPanel.\n` +
-        `Gmail: enable 2-Step Verification on ${process.env.GMAIL_USER} and regenerate the App Password.`
-      );
     }
+  } else {
+    errors.push("Gmail → not configured (missing GMAIL_USER/GMAIL_APP_PASS)");
   }
 
-  throw new Error("All email transports failed.");
+  throw new Error(`Email delivery failed. ${errors.join(" | ")}`);
 };
 
 export default sendEmail;
