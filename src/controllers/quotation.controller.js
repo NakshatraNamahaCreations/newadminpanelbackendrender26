@@ -1,15 +1,189 @@
-import Quotation      from "../models/Quotation.js";
-import ProformaInvoice from "../models/ProformaInvoice.js";
-import Enquiry         from "../models/Enquiry.js";
-import sendEmail       from "../utils/sendEmail.js";
+import Quotation           from "../models/Quotation.js";
+import ProformaInvoice     from "../models/ProformaInvoice.js";
+import Enquiry             from "../models/Enquiry.js";
+import sendEmail           from "../utils/sendEmail.js";
+import generateQuotationPDF from "../utils/generateQuotationPDF.js";
 
 const BRANCHES = ["Bangalore", "Mysore", "Mumbai"];
+
+const BRANCH_INFO = {
+  Bangalore: { addr: "No. 45, 2nd Floor, HSR Layout, Bengaluru – 560102", phone: "+91 99005 66466" },
+  Mysore:    { addr: "Saraswathipuram, Mysuru – 570009",                   phone: "+91 99005 66466" },
+  Mumbai:    { addr: "Andheri East, Mumbai – 400069",                      phone: "+91 99005 66466" },
+};
 
 function calcTotals(lineItems = [], discount = 0, taxPct = 0) {
   const subtotal = lineItems.reduce((s, item) => s + Number(item.amount || 0), 0);
   const taxAmt   = ((subtotal - discount) * taxPct) / 100;
   const total    = Math.max(0, subtotal - discount + taxAmt);
   return { subtotal, total };
+}
+
+/* Build the client-facing HTML for a quotation. */
+function buildQuotationHtml(q) {
+  const itemRows = (q.lineItems || [])
+    .map((item, i) => `
+      <tr style="background:${i % 2 === 0 ? "#fff" : "#f8fafc"}">
+        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#374151">${item.description}</td>
+        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#374151;text-align:center">${item.qty}</td>
+        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#374151;text-align:right">₹${Number(item.rate || 0).toLocaleString("en-IN")}</td>
+        <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;font-weight:700;color:#0f172a;text-align:right">₹${Number(item.amount || 0).toLocaleString("en-IN")}</td>
+      </tr>`)
+    .join("");
+
+  const validUntilText = q.validUntil
+    ? `<p style="margin:0 0 4px;font-size:13px;color:#64748b">Valid Until: <strong style="color:#0f172a">${new Date(q.validUntil).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</strong></p>`
+    : "";
+
+  const gstLine = q.tax > 0
+    ? `<tr><td style="padding:6px 14px;font-size:13px;color:#64748b;text-align:right">GST (${q.tax}%)</td><td style="padding:6px 14px;font-size:13px;text-align:right;width:130px">₹${(((q.subtotal - q.discount) * q.tax) / 100).toLocaleString("en-IN")}</td></tr>`
+    : "";
+  const discountLine = q.discount > 0
+    ? `<tr><td style="padding:6px 14px;font-size:13px;color:#16a34a;text-align:right">Discount</td><td style="padding:6px 14px;font-size:13px;color:#16a34a;text-align:right">− ₹${Number(q.discount).toLocaleString("en-IN")}</td></tr>`
+    : "";
+
+  const bi = BRANCH_INFO[q.branch] || BRANCH_INFO.Bangalore;
+
+  const greetingName = q.clientName ? q.clientName : "Valued Client";
+  const validUntilSentence = q.validUntil
+    ? ` This proposal is valid until <strong>${new Date(q.validUntil).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</strong>.`
+    : "";
+
+  return `
+<div style="font-family:Arial,sans-serif;max-width:660px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">
+  <div style="background:linear-gradient(135deg,#0f172a,#1e3a5f);padding:28px 32px">
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td>
+          <div style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-0.5px">NNC</div>
+          <div style="font-size:11px;color:rgba(255,255,255,.6);margin-top:2px">Nakshatra Namaha Creations</div>
+        </td>
+        <td style="text-align:right">
+          <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:1.5px">Quotation</div>
+          <div style="font-size:20px;font-weight:900;color:#7c3aed;font-family:monospace;margin-top:3px">${q.quoteNumber}</div>
+          <div style="font-size:11px;color:rgba(255,255,255,.45);margin-top:2px">Branch: ${q.branch}</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <div style="padding:28px 32px 8px;background:#ffffff">
+    <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:12px">
+      Dear ${greetingName},
+    </div>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.75;color:#334155">
+      Thank you for considering <strong style="color:#0f172a">Nakshatra Namaha Creations</strong> for your project${q.clientCompany ? ` at <strong style="color:#0f172a">${q.clientCompany}</strong>` : ""}. We truly appreciate the opportunity to be of service.
+    </p>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.75;color:#334155">
+      Please find enclosed our formal quotation <strong style="color:#7c3aed">${q.quoteNumber}</strong>, prepared with careful attention to your requirements. The details below outline the scope of work, deliverables, and the corresponding investment.${validUntilSentence}
+    </p>
+    <p style="margin:0 0 18px;font-size:14px;line-height:1.75;color:#334155">
+      Should you have any questions, require clarifications, or wish to discuss any aspect further, we would be delighted to assist. We look forward to the privilege of partnering with you and delivering a result that exceeds your expectations.
+    </p>
+  </div>
+
+  <div style="background:#f8fafc;padding:20px 32px;border-bottom:1px solid #e2e8f0">
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="vertical-align:top;width:55%">
+          <div style="font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Bill To</div>
+          <div style="font-size:15px;font-weight:700;color:#0f172a">${q.clientName}</div>
+          ${q.clientCompany ? `<div style="font-size:13px;color:#475569;margin-top:2px">${q.clientCompany}</div>` : ""}
+          ${q.clientAddress ? `<div style="font-size:12px;color:#64748b;margin-top:4px">${q.clientAddress}</div>` : ""}
+          ${q.clientPhone   ? `<div style="font-size:12px;color:#64748b;margin-top:4px">📞 ${q.clientPhone}</div>` : ""}
+          ${q.clientEmail   ? `<div style="font-size:12px;color:#64748b;margin-top:2px">✉ ${q.clientEmail}</div>` : ""}
+          ${q.clientGstin   ? `<div style="font-size:12px;color:#64748b;margin-top:4px">GSTIN: ${q.clientGstin}</div>` : ""}
+        </td>
+        <td style="vertical-align:top;text-align:right">
+          <div style="font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Details</div>
+          <div style="font-size:12px;color:#64748b;margin-bottom:4px">Date: <strong style="color:#0f172a">${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</strong></div>
+          ${validUntilText}
+          ${q.revisionNumber > 1 ? `<div style="font-size:12px;color:#7c3aed">Revision ${q.revisionNumber}</div>` : ""}
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <div style="padding:0 32px 24px">
+    <table style="width:100%;border-collapse:collapse;margin-top:20px">
+      <thead>
+        <tr style="background:#0f172a">
+          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px">Description</th>
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;width:60px">Qty</th>
+          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;width:110px">Rate</th>
+          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;width:120px">Amount</th>
+        </tr>
+      </thead>
+      <tbody>${itemRows}</tbody>
+    </table>
+
+    <table style="width:100%;margin-top:4px;border-top:2px solid #e2e8f0">
+      <tr><td style="padding:6px 14px;font-size:13px;color:#64748b;text-align:right">Subtotal</td><td style="padding:6px 14px;font-size:13px;text-align:right;width:130px">₹${Number(q.subtotal || 0).toLocaleString("en-IN")}</td></tr>
+      ${discountLine}
+      ${gstLine}
+      <tr style="background:#f1f5f9">
+        <td style="padding:12px 14px;font-size:16px;font-weight:900;color:#0f172a;text-align:right">Total</td>
+        <td style="padding:12px 14px;font-size:16px;font-weight:900;color:#7c3aed;text-align:right">₹${Number(q.total || 0).toLocaleString("en-IN")}</td>
+      </tr>
+    </table>
+  </div>
+
+  ${q.notes ? `<div style="margin:0 32px 16px;background:#f8fafc;border-radius:8px;padding:14px 16px;font-size:13px;color:#475569;border-left:3px solid #7c3aed"><strong>Notes:</strong><br/><span style="line-height:1.7">${q.notes.replace(/\n/g, "<br/>")}</span></div>` : ""}
+  ${q.terms ? `<div style="margin:0 32px 24px;background:#fefce8;border-radius:8px;padding:14px 16px;font-size:12px;color:#713f12;border-left:3px solid #eab308"><strong>Terms & Conditions:</strong><br/><span style="line-height:1.7">${q.terms.replace(/\n/g, "<br/>")}</span></div>` : ""}
+
+  <div style="padding:8px 32px 26px;background:#ffffff">
+    <p style="margin:0 0 12px;font-size:14px;line-height:1.75;color:#334155">
+      We thank you once again for the opportunity and look forward to your kind confirmation. Please feel free to reach out to us${q.senderEmail ? ` directly at <a href="mailto:${q.senderEmail}" style="color:#7c3aed;text-decoration:none;font-weight:600">${q.senderEmail}</a>` : ""} for any assistance.
+    </p>
+    <div style="margin-top:14px;font-size:14px;color:#0f172a">
+      <div style="font-weight:700">Warm regards,</div>
+      <div style="font-weight:800;margin-top:4px">Team Nakshatra Namaha Creations Pvt. Ltd.</div>
+      <div style="font-size:12px;color:#64748b;margin-top:2px">Website &amp; Digital Solutions &nbsp;•&nbsp; ${q.branch} Office</div>
+    </div>
+  </div>
+
+  <div style="background:#0f172a;padding:20px 32px">
+    <table width="100%" cellpadding="0" cellspacing="0">
+      <tr>
+        <td style="vertical-align:top">
+          <div style="font-size:12px;color:rgba(255,255,255,.5)">NNC Nakshatra Namaha Creations Pvt. Ltd.<br/>${bi.addr}</div>
+          <div style="font-size:12px;color:#7c3aed;margin-top:6px">${bi.phone}</div>
+        </td>
+        <td style="text-align:right;vertical-align:top">
+          <div style="font-size:11px;color:rgba(255,255,255,.35)">nakshatranamahacreations.com</div>
+          <div style="font-size:11px;color:rgba(255,255,255,.35);margin-top:2px">GSTIN: 29AABCN1234F1Z5</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+</div>`;
+}
+
+/* Send a quotation to its client. Returns { ok, transport?, error? }. */
+async function deliverQuotationEmail(q) {
+  if (!q?.clientEmail) return { ok: false, error: "Client email is not set" };
+  try {
+    const html      = buildQuotationHtml(q);
+    const pdfBuffer = await generateQuotationPDF(q);
+    const safeName  = String(q.quoteNumber || "Quotation").replace(/[^\w.-]+/g, "_");
+
+    const info = await sendEmail({
+      to:      q.clientEmail,
+      cc:      q.senderEmail || undefined,
+      subject: `Quotation ${q.quoteNumber} from NNC — ${q.clientName}`,
+      html,
+      replyTo: q.senderEmail || undefined,
+      attachments: [{
+        filename:    `${safeName}.pdf`,
+        content:     pdfBuffer,
+        contentType: "application/pdf",
+      }],
+    });
+    return { ok: true, transport: info?.transport || "smtp" };
+  } catch (err) {
+    console.error("deliverQuotationEmail error:", err.message);
+    return { ok: false, error: err.message };
+  }
 }
 
 // GET /api/quotations
@@ -162,7 +336,24 @@ export async function createQuotation(req, res) {
       await Enquiry.findByIdAndUpdate(enquiryId, { status: "quoted" }).catch(() => {});
     }
 
-    return res.status(201).json({ success: true, data: quotation });
+    // Auto-send the quotation to the client if an email is present.
+    let emailResult = { ok: false, skipped: true };
+    if (quotation.clientEmail) {
+      emailResult = await deliverQuotationEmail(quotation.toObject());
+      if (emailResult.ok) {
+        quotation.status = "sent";
+        quotation.sentAt = new Date();
+        await quotation.save();
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: quotation,
+      emailSent: !!emailResult.ok,
+      emailError: emailResult.ok ? undefined : (emailResult.error || undefined),
+      emailTransport: emailResult.transport,
+    });
   } catch (err) {
     console.error("createQuotation error:", err);
     if (err.name === "ValidationError") return res.status(400).json({ success: false, message: err.message });
@@ -225,7 +416,25 @@ export async function updateQuotation(req, res) {
     existing.total    = total;
 
     await existing.save();
-    return res.json({ success: true, data: existing });
+
+    // Auto-resend to client on every save when an email is present.
+    let emailResult = { ok: false, skipped: true };
+    if (existing.clientEmail) {
+      emailResult = await deliverQuotationEmail(existing.toObject());
+      if (emailResult.ok) {
+        if (!existing.sentAt) existing.sentAt = new Date();
+        if (existing.status === "draft") existing.status = "sent";
+        await existing.save();
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: existing,
+      emailSent: !!emailResult.ok,
+      emailError: emailResult.ok ? undefined : (emailResult.error || undefined),
+      emailTransport: emailResult.transport,
+    });
   } catch (err) {
     console.error("updateQuotation error:", err);
     if (err.name === "ValidationError") return res.status(400).json({ success: false, message: err.message });
@@ -391,204 +600,34 @@ export async function convertToProforma(req, res) {
   }
 }
 
-// POST /api/quotations/:id/send
+// POST /api/quotations/:id/send  (kept for the "Resend" button)
 export async function sendQuotationEmail(req, res) {
   try {
     const q = await Quotation.findById(req.params.id).lean();
     if (!q) return res.status(404).json({ success: false, message: "Quotation not found" });
     if (!q.clientEmail) return res.status(400).json({ success: false, message: "Client email is not set" });
 
-    const itemRows = (q.lineItems || [])
-      .map((item, i) => `
-        <tr style="background:${i % 2 === 0 ? "#fff" : "#f8fafc"}">
-          <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#374151">${item.description}</td>
-          <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#374151;text-align:center">${item.qty}</td>
-          <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;color:#374151;text-align:right">₹${Number(item.rate || 0).toLocaleString("en-IN")}</td>
-          <td style="padding:10px 14px;border-bottom:1px solid #e2e8f0;font-size:13px;font-weight:700;color:#0f172a;text-align:right">₹${Number(item.amount || 0).toLocaleString("en-IN")}</td>
-        </tr>`)
-      .join("");
-
-    const validUntilText = q.validUntil
-      ? `<p style="margin:0 0 4px;font-size:13px;color:#64748b">Valid Until: <strong style="color:#0f172a">${new Date(q.validUntil).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</strong></p>`
-      : "";
-
-    const gstLine = q.tax > 0
-      ? `<tr><td style="padding:6px 14px;font-size:13px;color:#64748b;text-align:right">GST (${q.tax}%)</td><td style="padding:6px 14px;font-size:13px;text-align:right;width:130px">₹${(((q.subtotal - q.discount) * q.tax) / 100).toLocaleString("en-IN")}</td></tr>`
-      : "";
-    const discountLine = q.discount > 0
-      ? `<tr><td style="padding:6px 14px;font-size:13px;color:#16a34a;text-align:right">Discount</td><td style="padding:6px 14px;font-size:13px;color:#16a34a;text-align:right">− ₹${Number(q.discount).toLocaleString("en-IN")}</td></tr>`
-      : "";
-
-    const branchInfo = {
-      Bangalore: { addr: "No. 45, 2nd Floor, HSR Layout, Bengaluru – 560102", phone: "+91 99005 66466" },
-      Mysore:    { addr: "Saraswathipuram, Mysuru – 570009",                   phone: "+91 99005 66466" },
-      Mumbai:    { addr: "Andheri East, Mumbai – 400069",                      phone: "+91 99005 66466" },
-    };
-    const bi = branchInfo[q.branch] || branchInfo.Bangalore;
-
-    const firstName  = String(q.clientName || "").trim().split(/\s+/)[0] || "there";
-    const greetingName = q.clientName ? q.clientName : "Valued Client";
-    const validUntilSentence = q.validUntil
-      ? ` This proposal is valid until <strong>${new Date(q.validUntil).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</strong>.`
-      : "";
-
-    const html = `
-<div style="font-family:Arial,sans-serif;max-width:660px;margin:0 auto;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden">
-  <!-- Header -->
-  <div style="background:linear-gradient(135deg,#0f172a,#1e3a5f);padding:28px 32px">
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr>
-        <td>
-          <div style="font-size:22px;font-weight:900;color:#fff;letter-spacing:-0.5px">NNC</div>
-          <div style="font-size:11px;color:rgba(255,255,255,.6);margin-top:2px">Nakshatra Namaha Creations</div>
-        </td>
-        <td style="text-align:right">
-          <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.5);text-transform:uppercase;letter-spacing:1.5px">Quotation</div>
-          <div style="font-size:20px;font-weight:900;color:#7c3aed;font-family:monospace;margin-top:3px">${q.quoteNumber}</div>
-          <div style="font-size:11px;color:rgba(255,255,255,.45);margin-top:2px">Branch: ${q.branch}</div>
-        </td>
-      </tr>
-    </table>
-  </div>
-
-  <!-- Professional Cover Note -->
-  <div style="padding:28px 32px 8px;background:#ffffff">
-    <div style="font-size:15px;font-weight:700;color:#0f172a;margin-bottom:12px">
-      Dear ${greetingName},
-    </div>
-    <p style="margin:0 0 14px;font-size:14px;line-height:1.75;color:#334155">
-      Thank you for considering <strong style="color:#0f172a">Nakshatra Namaha Creations</strong> for your project${q.clientCompany ? ` at <strong style="color:#0f172a">${q.clientCompany}</strong>` : ""}. We truly appreciate the opportunity to be of service.
-    </p>
-    <p style="margin:0 0 14px;font-size:14px;line-height:1.75;color:#334155">
-      Please find enclosed our formal quotation <strong style="color:#7c3aed">${q.quoteNumber}</strong>, prepared with careful attention to your requirements. The details below outline the scope of work, deliverables, and the corresponding investment.${validUntilSentence}
-    </p>
-    <p style="margin:0 0 18px;font-size:14px;line-height:1.75;color:#334155">
-      Should you have any questions, require clarifications, or wish to discuss any aspect further, we would be delighted to assist. We look forward to the privilege of partnering with you and delivering a result that exceeds your expectations.
-    </p>
-  </div>
-
-  <!-- Bill To + Meta -->
-  <div style="background:#f8fafc;padding:20px 32px;border-bottom:1px solid #e2e8f0">
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr>
-        <td style="vertical-align:top;width:55%">
-          <div style="font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Bill To</div>
-          <div style="font-size:15px;font-weight:700;color:#0f172a">${q.clientName}</div>
-          ${q.clientCompany ? `<div style="font-size:13px;color:#475569;margin-top:2px">${q.clientCompany}</div>` : ""}
-          ${q.clientAddress ? `<div style="font-size:12px;color:#64748b;margin-top:4px">${q.clientAddress}</div>` : ""}
-          ${q.clientPhone   ? `<div style="font-size:12px;color:#64748b;margin-top:4px">📞 ${q.clientPhone}</div>` : ""}
-          ${q.clientEmail   ? `<div style="font-size:12px;color:#64748b;margin-top:2px">✉ ${q.clientEmail}</div>` : ""}
-          ${q.clientGstin   ? `<div style="font-size:12px;color:#64748b;margin-top:4px">GSTIN: ${q.clientGstin}</div>` : ""}
-        </td>
-        <td style="vertical-align:top;text-align:right">
-          <div style="font-size:10px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Details</div>
-          <div style="font-size:12px;color:#64748b;margin-bottom:4px">Date: <strong style="color:#0f172a">${new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}</strong></div>
-          ${validUntilText}
-          ${q.revisionNumber > 1 ? `<div style="font-size:12px;color:#7c3aed">Revision ${q.revisionNumber}</div>` : ""}
-        </td>
-      </tr>
-    </table>
-  </div>
-
-  <!-- Items Table -->
-  <div style="padding:0 32px 24px">
-    <table style="width:100%;border-collapse:collapse;margin-top:20px">
-      <thead>
-        <tr style="background:#0f172a">
-          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px">Description</th>
-          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;width:60px">Qty</th>
-          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;width:110px">Rate</th>
-          <th style="padding:10px 14px;text-align:right;font-size:11px;font-weight:700;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:.5px;width:120px">Amount</th>
-        </tr>
-      </thead>
-      <tbody>${itemRows}</tbody>
-    </table>
-
-    <!-- Totals -->
-    <table style="width:100%;margin-top:4px;border-top:2px solid #e2e8f0">
-      <tr><td style="padding:6px 14px;font-size:13px;color:#64748b;text-align:right">Subtotal</td><td style="padding:6px 14px;font-size:13px;text-align:right;width:130px">₹${Number(q.subtotal || 0).toLocaleString("en-IN")}</td></tr>
-      ${discountLine}
-      ${gstLine}
-      <tr style="background:#f1f5f9">
-        <td style="padding:12px 14px;font-size:16px;font-weight:900;color:#0f172a;text-align:right">Total</td>
-        <td style="padding:12px 14px;font-size:16px;font-weight:900;color:#7c3aed;text-align:right">₹${Number(q.total || 0).toLocaleString("en-IN")}</td>
-      </tr>
-    </table>
-  </div>
-
-  ${q.notes ? `<div style="margin:0 32px 16px;background:#f8fafc;border-radius:8px;padding:14px 16px;font-size:13px;color:#475569;border-left:3px solid #7c3aed"><strong>Notes:</strong><br/><span style="line-height:1.7">${q.notes.replace(/\n/g, "<br/>")}</span></div>` : ""}
-  ${q.terms ? `<div style="margin:0 32px 24px;background:#fefce8;border-radius:8px;padding:14px 16px;font-size:12px;color:#713f12;border-left:3px solid #eab308"><strong>Terms & Conditions:</strong><br/><span style="line-height:1.7">${q.terms.replace(/\n/g, "<br/>")}</span></div>` : ""}
-
-  <!-- Closing signature -->
-  <div style="padding:8px 32px 26px;background:#ffffff">
-    <p style="margin:0 0 12px;font-size:14px;line-height:1.75;color:#334155">
-      We thank you once again for the opportunity and look forward to your kind confirmation. Please feel free to reach out to us${q.senderEmail ? ` directly at <a href="mailto:${q.senderEmail}" style="color:#7c3aed;text-decoration:none;font-weight:600">${q.senderEmail}</a>` : ""} for any assistance.
-    </p>
-    <div style="margin-top:14px;font-size:14px;color:#0f172a">
-      <div style="font-weight:700">Warm regards,</div>
-      <div style="font-weight:800;margin-top:4px">Team Nakshatra Namaha Creations Pvt. Ltd.</div>
-      <div style="font-size:12px;color:#64748b;margin-top:2px">Website &amp; Digital Solutions &nbsp;•&nbsp; ${q.branch} Office</div>
-    </div>
-  </div>
-
-  <!-- Footer -->
-  <div style="background:#0f172a;padding:20px 32px">
-    <table width="100%" cellpadding="0" cellspacing="0">
-      <tr>
-        <td style="vertical-align:top">
-          <div style="font-size:12px;color:rgba(255,255,255,.5)">NNC Nakshatra Namaha Creations Pvt. Ltd.<br/>${bi.addr}</div>
-          <div style="font-size:12px;color:#7c3aed;margin-top:6px">${bi.phone}</div>
-        </td>
-        <td style="text-align:right;vertical-align:top">
-          <div style="font-size:11px;color:rgba(255,255,255,.35)">nakshatranamahacreations.com</div>
-          <div style="font-size:11px;color:rgba(255,255,255,.35);margin-top:2px">GSTIN: 29AABCN1234F1Z5</div>
-        </td>
-      </tr>
-    </table>
-  </div>
-</div>`;
-
-    let emailSent = true;
-    let emailError = null;
-    let transport  = null;
-    try {
-      const info = await sendEmail({
-        to:      q.clientEmail,
-        cc:      q.senderEmail || undefined,
-        subject: `Quotation ${q.quoteNumber} from NNC — ${q.clientName}`,
-        html,
-        replyTo: q.senderEmail || undefined,
-      });
-      transport = info?.transport || null;
-    } catch (mailErr) {
-      console.error("sendQuotationEmail mail error:", mailErr.message);
-      emailSent = false;
-      emailError = mailErr.message;
-    }
-
-    if (emailSent) {
+    const result = await deliverQuotationEmail(q);
+    if (result.ok) {
       await Quotation.findByIdAndUpdate(q._id, { status: "sent", sentAt: new Date() });
-      const recipients = q.senderEmail
-        ? `${q.clientEmail} (cc: ${q.senderEmail})`
-        : q.clientEmail;
+      const recipients = q.senderEmail ? `${q.clientEmail} (cc: ${q.senderEmail})` : q.clientEmail;
       return res.json({
         success: true,
         emailSent: true,
-        message: `Quotation emailed via ${transport || "smtp"} to ${recipients}`,
+        message: `Quotation emailed via ${result.transport || "smtp"} to ${recipients}`,
       });
     }
-
-    // Email failed — do NOT silently mark as sent. Return 502 so the UI shows the real error.
     return res.status(502).json({
       success:   false,
       emailSent: false,
-      message:   emailError || "Email delivery failed",
+      message:   result.error || "Email delivery failed",
     });
   } catch (err) {
     console.error("sendQuotationEmail error:", err);
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 }
+
 
 // DELETE /api/quotations/:id
 export async function deleteQuotation(req, res) {

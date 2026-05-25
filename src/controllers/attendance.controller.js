@@ -916,6 +916,13 @@ export async function generateSalarySlipPDF(req, res) {
     const periodStr  = `${monthName} ${record.year}`;
     const filename   = `salary-slip-${record.employeeCode || emp.employeeId || "emp"}-${record.year}-${String(record.month).padStart(2, "0")}.pdf`;
 
+    // Pull per-day attendance for the period — used for the daily timings table.
+    const attendanceRows = await Attendance.find({
+      employeeId: record.employeeId?._id || record.employeeId,
+      month:      record.month,
+      year:       record.year,
+    }).sort({ date: 1 }).lean();
+
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
@@ -925,6 +932,32 @@ export async function generateSalarySlipPDF(req, res) {
     const pageWidth  = doc.page.width  - 100; // accounting for margins
     const primaryColor = "#1a237e";
     const accentColor  = "#e3f2fd";
+
+    /* Helper — format a Date as "09:32 AM" in IST */
+    const fmtTime = (d) => {
+      if (!d) return "—";
+      try {
+        return new Date(d).toLocaleTimeString("en-IN", {
+          hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata",
+        });
+      } catch { return "—"; }
+    };
+    /* Helper — derive break minutes from check-in/out vs worked hours */
+    const breakMins = (row) => {
+      if (!row.checkIn || !row.checkOut) return null;
+      const grossMs = new Date(row.checkOut) - new Date(row.checkIn);
+      if (grossMs <= 0) return null;
+      const grossMins  = Math.round(grossMs / 60000);
+      const workedMins = Math.round((Number(row.workingHours) || 0) * 60);
+      const diff       = grossMins - workedMins;
+      return diff > 0 ? diff : 0;
+    };
+    const fmtMins = (m) => {
+      if (m == null) return "—";
+      if (m < 60)    return `${m}m`;
+      const h = Math.floor(m / 60), rest = m % 60;
+      return rest === 0 ? `${h}h` : `${h}h ${rest}m`;
+    };
 
     // ---- Company Header ----
     doc.fontSize(20).fillColor(primaryColor).font("Helvetica-Bold")
@@ -1014,13 +1047,19 @@ export async function generateSalarySlipPDF(req, res) {
     doc.moveTo(50, y).lineTo(50 + pageWidth, y).strokeColor("#ccc").lineWidth(1).stroke();
     y += 15;
 
-    // ---- Earnings ----
-    const rightX   = 380;
-    const labelW   = 280;
+    // ═════════════════════════════════════════════════════════
+    //  EARNINGS (left column)  |  DEDUCTIONS (right column)
+    // ═════════════════════════════════════════════════════════
+    const halfW       = (pageWidth - 12) / 2;             // 12px gutter between cols
+    const leftColX    = col1X;
+    const rightColX   = col1X + halfW + 12;
+    const sectionStartY = y;
 
-    doc.fontSize(12).fillColor(primaryColor).font("Helvetica-Bold")
-      .text("Earnings", col1X, y);
-    y += 18;
+    // ── EARNINGS / ALLOWANCES (LEFT) ──
+    let yL = sectionStartY;
+    doc.fontSize(11).fillColor(primaryColor).font("Helvetica-Bold")
+      .text("Earnings / Allowances", leftColX, yL);
+    yL += 18;
 
     const earnRows = [
       ["Basic Salary (40%)",         record.basicSalary || Math.round((record.grossSalary || 0) * 0.40)],
@@ -1029,108 +1068,119 @@ export async function generateSalarySlipPDF(req, res) {
       ["Special Allowance",          record.specialAllowance ?? Math.max(0, (record.grossSalary || 0) * 0.40)],
     ];
 
-    doc.fontSize(10).fillColor("#333");
+    const earnLabelW  = halfW - 78;  // leave room for amount column
+    const earnAmtX    = leftColX + halfW - 70;
+    const earnAmtW    = 70;
+    doc.fontSize(9.5).fillColor("#333");
     for (const [label, value] of earnRows) {
-      doc.font("Helvetica").text(label, col1X + 8, y, { width: labelW });
-      doc.font("Helvetica-Bold").text(`INR ${Number(value).toFixed(2)}`, rightX, y, { align: "right", width: 120 });
-      y += 15;
+      doc.font("Helvetica").fillColor("#333").text(label, leftColX + 4, yL, { width: earnLabelW });
+      doc.font("Helvetica-Bold").fillColor("#0f172a")
+        .text(`INR ${Number(value).toFixed(2)}`, earnAmtX, yL, { align: "right", width: earnAmtW });
+      yL += 14;
     }
-
-    y += 4;
-    doc.rect(col1X, y - 2, pageWidth, 20).fill(accentColor);
+    yL += 4;
+    doc.rect(leftColX, yL - 2, halfW, 22).fill(accentColor);
     doc.fontSize(10).fillColor(primaryColor).font("Helvetica-Bold")
-      .text("Gross Salary (Total Earnings):", col1X + 8, y + 2, { width: labelW });
-    doc.text(`INR ${(record.grossSalary || 0).toFixed(2)}`, rightX, y + 2, { align: "right", width: 120 });
-    y += 28;
+      .text("Gross Earnings:", leftColX + 4, yL + 4, { width: earnLabelW });
+    doc.text(`INR ${(record.grossSalary || 0).toFixed(2)}`, earnAmtX, yL + 4, { align: "right", width: earnAmtW });
+    yL += 30;
 
-    // ---- Deductions ----
-    doc.moveTo(50, y).lineTo(50 + pageWidth, y).strokeColor("#ccc").lineWidth(1).stroke();
-    y += 12;
+    // ── DEDUCTIONS (RIGHT) ──
+    let yR = sectionStartY;
+    doc.fontSize(11).fillColor(primaryColor).font("Helvetica-Bold")
+      .text("Deductions", rightColX, yR);
+    yR += 18;
 
-    doc.fontSize(12).fillColor(primaryColor).font("Helvetica-Bold")
-      .text("Deductions", col1X, y);
-    y += 18;
+    const pfEmp        = record.pfEmployee      || 0;
+    const pt           = record.professionalTax || 0;
+    const leaveEntitle = record.monthlyLeaveEntitlement ?? 1.5;
+    const excessLeave  = record.excessLeaveDays || 0;
+    const leaveDeduct  = record.leaveDeduction  || 0;
 
-    const pfEmp          = record.pfEmployee      || 0;
-    const pt             = record.professionalTax || 0;
-    const leaveEntitle   = record.monthlyLeaveEntitlement ?? 1.5;
-    const excessLeave    = record.excessLeaveDays || 0;
-    const leaveDeduct    = record.leaveDeduction  || 0;
+    const dedLabelW = halfW - 78;
+    const dedAmtX   = rightColX + halfW - 70;
+    const dedAmtW   = 70;
 
-    // ── Attendance-Based Deductions ──
-    doc.fontSize(10).font("Helvetica-Bold").fillColor("#475569").text("Attendance-Based Deductions:", col1X + 8, y);
-    y += 14;
-    doc.fillColor("#333");
+    doc.fontSize(9).font("Helvetica-Bold").fillColor("#475569")
+      .text("Attendance-Based:", rightColX + 4, yR);
+    yR += 12;
+    doc.fontSize(9.5);
 
     let hasAttDeduct = false;
     if ((record.absentDeduction || 0) > 0) {
-      doc.font("Helvetica").text(`Absent Deduction (${record.absentDays} day${record.absentDays !== 1 ? "s" : ""})`, col1X + 16, y, { width: labelW });
-      doc.font("Helvetica-Bold").fillColor("#dc2626").text(`- INR ${Number(record.absentDeduction).toFixed(2)}`, rightX, y, { align: "right", width: 120 });
-      doc.fillColor("#333"); y += 15; hasAttDeduct = true;
+      doc.font("Helvetica").fillColor("#333")
+        .text(`Absent (${record.absentDays} day${record.absentDays !== 1 ? "s" : ""})`, rightColX + 8, yR, { width: dedLabelW });
+      doc.font("Helvetica-Bold").fillColor("#dc2626")
+        .text(`- INR ${Number(record.absentDeduction).toFixed(2)}`, dedAmtX, yR, { align: "right", width: dedAmtW });
+      yR += 13; hasAttDeduct = true;
     }
     if ((record.halfDayDeduction || 0) > 0) {
-      doc.font("Helvetica").text(`Half-Day Deduction (${record.halfDays} day${record.halfDays !== 1 ? "s" : ""})`, col1X + 16, y, { width: labelW });
-      doc.font("Helvetica-Bold").fillColor("#dc2626").text(`- INR ${Number(record.halfDayDeduction).toFixed(2)}`, rightX, y, { align: "right", width: 120 });
-      doc.fillColor("#333"); y += 15; hasAttDeduct = true;
+      doc.font("Helvetica").fillColor("#333")
+        .text(`Half-Day (${record.halfDays} day${record.halfDays !== 1 ? "s" : ""})`, rightColX + 8, yR, { width: dedLabelW });
+      doc.font("Helvetica-Bold").fillColor("#dc2626")
+        .text(`- INR ${Number(record.halfDayDeduction).toFixed(2)}`, dedAmtX, yR, { align: "right", width: dedAmtW });
+      yR += 13; hasAttDeduct = true;
     }
-    // Leave line — show entitlement info + deduction only if excess
-    const leaveLine = `Leave Used: ${record.leaveDays || 0} day${(record.leaveDays || 0) !== 1 ? "s" : ""}  (Entitlement: ${leaveEntitle} days/month — 1 Casual + 0.5 Sick)`;
-    doc.font("Helvetica").fillColor("#333").text(leaveLine, col1X + 16, y, { width: labelW });
-    if (leaveDeduct > 0) {
-      doc.font("Helvetica-Bold").fillColor("#dc2626").text(`- INR ${leaveDeduct.toFixed(2)}`, rightX, y, { align: "right", width: 120 });
-      doc.fillColor("#333");
-      y += 15;
-      doc.font("Helvetica").fillColor("#888").text(`  Excess leave: ${excessLeave} day${excessLeave !== 1 ? "s" : ""} beyond entitlement`, col1X + 16, y, { width: labelW });
-    } else {
-      doc.font("Helvetica").fillColor("#059669").text("No deduction", rightX, y, { align: "right", width: 120 });
-      doc.fillColor("#333");
-    }
-    y += 16;
-
-    // Late — info only, no deduction
-    if ((record.totalLateMinutes || 0) > 0) {
-      doc.font("Helvetica").fillColor("#888")
-        .text(`Late Arrivals: ${record.lateDays} day${record.lateDays !== 1 ? "s" : ""} (${record.totalLateMinutes} min total) — Info only, no deduction`, col1X + 16, y, { width: labelW + 130 });
-      y += 14;
-      doc.fillColor("#333");
-    }
-
-    if (!hasAttDeduct && leaveDeduct === 0) {
-      doc.font("Helvetica").fillColor("#059669").text("No attendance deductions", col1X + 16, y);
-      y += 14; doc.fillColor("#333");
-    }
-
-    // ── Statutory Deductions ──
-    y += 4;
-    doc.font("Helvetica-Bold").fillColor("#475569").text("Statutory Deductions:", col1X + 8, y);
-    y += 14;
+    // Leave
     doc.font("Helvetica").fillColor("#333")
-      .text(`PF Employee Contribution (12% of Basic)`, col1X + 16, y, { width: labelW });
+      .text(`Leave Used: ${record.leaveDays || 0} day${(record.leaveDays || 0) !== 1 ? "s" : ""} (Entitlement ${leaveEntitle})`, rightColX + 8, yR, { width: dedLabelW });
+    if (leaveDeduct > 0) {
+      doc.font("Helvetica-Bold").fillColor("#dc2626")
+        .text(`- INR ${leaveDeduct.toFixed(2)}`, dedAmtX, yR, { align: "right", width: dedAmtW });
+      yR += 13;
+      doc.font("Helvetica").fontSize(8).fillColor("#888")
+        .text(`Excess ${excessLeave} day${excessLeave !== 1 ? "s" : ""}`, rightColX + 8, yR, { width: dedLabelW });
+      doc.fontSize(9.5);
+    } else {
+      doc.font("Helvetica").fillColor("#059669")
+        .text("Within entitlement", dedAmtX, yR, { align: "right", width: dedAmtW });
+    }
+    yR += 14;
+
+    if ((record.totalLateMinutes || 0) > 0) {
+      doc.fontSize(8).font("Helvetica").fillColor("#888")
+        .text(`Late: ${record.lateDays} day${record.lateDays !== 1 ? "s" : ""} (${record.totalLateMinutes} min) — info only`, rightColX + 8, yR, { width: halfW - 12 });
+      yR += 12;
+      doc.fontSize(9.5);
+    }
+    if (!hasAttDeduct && leaveDeduct === 0) {
+      doc.font("Helvetica").fillColor("#059669").text("No attendance deductions", rightColX + 8, yR);
+      yR += 12;
+    }
+
+    // Statutory
+    yR += 4;
+    doc.fontSize(9).font("Helvetica-Bold").fillColor("#475569")
+      .text("Statutory:", rightColX + 4, yR);
+    yR += 12;
+    doc.fontSize(9.5).font("Helvetica").fillColor("#333")
+      .text("PF Employee (12% Basic)", rightColX + 8, yR, { width: dedLabelW });
     doc.font("Helvetica-Bold").fillColor("#dc2626")
-      .text(`- INR ${pfEmp.toFixed(2)}`, rightX, y, { align: "right", width: 120 });
-    doc.fillColor("#333");
-    y += 15;
+      .text(`- INR ${pfEmp.toFixed(2)}`, dedAmtX, yR, { align: "right", width: dedAmtW });
+    yR += 13;
 
     if (pt > 0) {
-      doc.font("Helvetica").text("Professional Tax (Karnataka)", col1X + 16, y, { width: labelW });
+      doc.font("Helvetica").fillColor("#333").text("Professional Tax", rightColX + 8, yR, { width: dedLabelW });
       doc.font("Helvetica-Bold").fillColor("#dc2626")
-        .text(`- INR ${pt.toFixed(2)}`, rightX, y, { align: "right", width: 120 });
-      doc.fillColor("#333");
-      y += 15;
+        .text(`- INR ${pt.toFixed(2)}`, dedAmtX, yR, { align: "right", width: dedAmtW });
+      yR += 13;
     }
 
-    // Employer PF info line
-    doc.font("Helvetica").fillColor("#888")
-      .text(`Employer PF Contribution (12% of Basic): INR ${(record.pfEmployer || 0).toFixed(2)} (not deducted from employee)`, col1X + 8, y, { width: labelW + 130 });
-    doc.fillColor("#333");
-    y += 18;
+    yR += 6;
+    doc.rect(rightColX, yR - 2, halfW, 22).fill(accentColor);
+    doc.fontSize(10).fillColor(primaryColor).font("Helvetica-Bold")
+      .text("Total Deductions:", rightColX + 4, yR + 4, { width: dedLabelW });
+    doc.text(`- INR ${(record.totalDeduction || 0).toFixed(2)}`, dedAmtX, yR + 4, { align: "right", width: dedAmtW });
+    yR += 30;
 
-    // Total Deduction highlight
-    doc.rect(col1X, y - 2, pageWidth, 22).fill(accentColor);
-    doc.fontSize(11).fillColor(primaryColor).font("Helvetica-Bold")
-      .text("Total Deductions:", col1X + 8, y + 2, { width: labelW });
-    doc.text(`- INR ${(record.totalDeduction || 0).toFixed(2)}`, rightX, y + 2, { align: "right", width: 120 });
-    y += 32;
+    // Move y to the bottom of the taller column
+    y = Math.max(yL, yR);
+
+    // Employer PF info — full-width footnote below both columns
+    doc.fontSize(8).font("Helvetica").fillColor("#888")
+      .text(`Note: Employer PF Contribution (12% of Basic): INR ${(record.pfEmployer || 0).toFixed(2)} — not deducted from employee.`,
+        col1X, y, { width: pageWidth });
+    y += 18;
 
     // ---- Net Salary ----
     doc.moveTo(50, y).lineTo(50 + pageWidth, y).strokeColor(primaryColor).lineWidth(2).stroke();
@@ -1138,8 +1188,9 @@ export async function generateSalarySlipPDF(req, res) {
 
     doc.rect(col1X, y - 4, pageWidth, 36).fill(primaryColor);
     doc.fontSize(14).fillColor("#ffffff").font("Helvetica-Bold")
-      .text("NET SALARY PAYABLE:", col1X + 10, y + 6, { width: labelW });
-    doc.fontSize(16).text(`INR ${(record.netSalary || 0).toFixed(2)}`, rightX - 20, y + 4, { align: "right", width: 140 });
+      .text("NET SALARY PAYABLE:", col1X + 10, y + 6, { width: pageWidth - 170 });
+    doc.fontSize(16)
+      .text(`INR ${(record.netSalary || 0).toFixed(2)}`, col1X + pageWidth - 160, y + 4, { align: "right", width: 150 });
 
     y += 52;
 
@@ -1157,7 +1208,119 @@ export async function generateSalarySlipPDF(req, res) {
       y += 40;
     }
 
+    // ═════════════════════════════════════════════════════════
+    //  DAILY ATTENDANCE — login, logout, working hours, break
+    // ═════════════════════════════════════════════════════════
+    if (attendanceRows && attendanceRows.length > 0) {
+      // New page if not enough vertical room left
+      if (y > doc.page.height - 200) { doc.addPage(); y = 50; }
+
+      doc.fontSize(12).fillColor(primaryColor).font("Helvetica-Bold")
+        .text("Daily Attendance — Login / Logout / Break", col1X, y);
+      y += 18;
+
+      // Column geometry (totals: pageWidth)
+      const cols = [
+        { label: "Date",      w: 70,  align: "left"   },
+        { label: "Day",       w: 50,  align: "left"   },
+        { label: "Status",    w: 60,  align: "left"   },
+        { label: "Login",     w: 70,  align: "center" },
+        { label: "Logout",    w: 70,  align: "center" },
+        { label: "Worked",    w: 60,  align: "right"  },
+        { label: "Break",     w: 55,  align: "right"  },
+        { label: "Late",      w: 60,  align: "right"  },
+      ];
+      const colX = (i) => col1X + cols.slice(0, i).reduce((s, c) => s + c.w, 0);
+
+      // Header row
+      doc.rect(col1X, y, pageWidth, 18).fill(primaryColor);
+      doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(8.5);
+      cols.forEach((c, i) => {
+        const x = colX(i) + (c.align === "left" ? 4 : 0);
+        doc.text(c.label, x, y + 5, { width: c.w - 6, align: c.align });
+      });
+      y += 18;
+
+      // Data rows
+      doc.font("Helvetica").fontSize(8.5);
+      const STATUS_COLOR = {
+        present:  "#16a34a",
+        late:     "#ca8a04",
+        "half-day": "#ea580c",
+        absent:   "#dc2626",
+        leave:    "#7c3aed",
+        holiday:  "#64748b",
+      };
+
+      attendanceRows.forEach((row, idx) => {
+        // New page if running off the bottom
+        if (y > doc.page.height - 70) {
+          doc.addPage();
+          y = 50;
+          // Repeat the header on the new page
+          doc.rect(col1X, y, pageWidth, 18).fill(primaryColor);
+          doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(8.5);
+          cols.forEach((c, i) => {
+            const x = colX(i) + (c.align === "left" ? 4 : 0);
+            doc.text(c.label, x, y + 5, { width: c.w - 6, align: c.align });
+          });
+          y += 18;
+          doc.font("Helvetica").fontSize(8.5);
+        }
+
+        // Zebra stripe
+        if (idx % 2 === 0) {
+          doc.rect(col1X, y, pageWidth, 16).fill("#f8fafc");
+        }
+
+        const d        = new Date(row.date);
+        const dateStr  = d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+        const dayStr   = d.toLocaleDateString("en-IN", { weekday: "short" });
+        const statusStr = (row.status || "absent").replace("-", " ");
+        const inStr    = fmtTime(row.checkIn);
+        const outStr   = fmtTime(row.checkOut);
+        const workedStr = row.workingHours
+          ? `${Number(row.workingHours).toFixed(2)} h`
+          : "—";
+        const brk      = breakMins(row);
+        const breakStr = brk == null ? "—" : fmtMins(brk);
+        const lateStr  = (row.lateMinutes || 0) > 0 ? `${row.lateMinutes}m` : "—";
+
+        const values = [dateStr, dayStr, statusStr, inStr, outStr, workedStr, breakStr, lateStr];
+
+        cols.forEach((c, i) => {
+          const x = colX(i) + (c.align === "left" ? 4 : 0);
+          if (i === 2) {
+            // Color the status column by status
+            doc.fillColor(STATUS_COLOR[row.status] || "#475569").font("Helvetica-Bold");
+            doc.text(values[i], x, y + 4, { width: c.w - 6, align: c.align });
+            doc.fillColor("#333").font("Helvetica");
+          } else if (i >= 5) {
+            // Numeric columns slightly bolder
+            doc.fillColor("#0f172a").font("Helvetica-Bold");
+            doc.text(values[i], x, y + 4, { width: c.w - 6, align: c.align });
+            doc.fillColor("#333").font("Helvetica");
+          } else {
+            doc.fillColor("#334155");
+            doc.text(values[i], x, y + 4, { width: c.w - 6, align: c.align });
+          }
+        });
+        y += 16;
+      });
+
+      // Light separator below the table
+      doc.moveTo(col1X, y).lineTo(col1X + pageWidth, y).strokeColor("#e2e8f0").lineWidth(1).stroke();
+      y += 6;
+      doc.fontSize(8).fillColor("#94a3b8").font("Helvetica-Oblique")
+        .text("Break is computed as the difference between elapsed time (Logout − Login) and Worked hours.",
+          col1X, y, { width: pageWidth });
+      y += 16;
+      doc.fillColor("#333").font("Helvetica");
+    }
+
     // ---- Footer ----
+    // New page if footer wouldn't fit
+    if (y > doc.page.height - 80) { doc.addPage(); y = 50; }
     doc.moveTo(50, y).lineTo(50 + pageWidth, y).strokeColor("#ccc").lineWidth(1).stroke();
     y += 15;
 
