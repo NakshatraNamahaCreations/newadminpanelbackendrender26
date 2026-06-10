@@ -28,6 +28,14 @@ const EnquirySchema = new mongoose.Schema(
       enum: ["Walk-In", "Referral", "Website", "Phone Call", "WhatsApp", "Instagram", "Google Ads", "JustDial"],
       default: "Walk-In",
     },
+    // Which website / brand this enquiry belongs to:
+    //   "nnc"        → NNC main website (nakshatranamahacreations.com) + CRM-created
+    //   "nncdigital" → NNC Digital website
+    site: {
+      type: String,
+      enum: ["nnc", "nncdigital"],
+      default: "nnc",
+    },
     budgetMin:    { type: Number, default: 0 },
     budgetMax:    { type: Number, default: 0 },
     requirements: { type: String, default: "", trim: true },
@@ -63,6 +71,7 @@ EnquirySchema.index({ createdAt: -1 });
 EnquirySchema.index({ services: 1 });
 EnquirySchema.index({ source: 1, createdAt: -1 });  // source filter + date sort
 EnquirySchema.index({ branch: 1, createdAt: -1 });  // branch filter + date sort
+EnquirySchema.index({ site: 1, createdAt: -1 });    // site (NNC / NNC Digital) tab filter + date sort
 
 // Text index for search
 EnquirySchema.index(

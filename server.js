@@ -73,6 +73,8 @@ const allowedOrigins = [
   "https://admincrm.nakshatranamahacreations.com",
   "https://nakshatranamahacreations.com",
   "https://www.nakshatranamahacreations.com",
+  "https://nncdigital.co.in",
+  "https://www.nncdigital.co.in",
 ];
 const corsOptions = {
   origin: (origin, cb) => {

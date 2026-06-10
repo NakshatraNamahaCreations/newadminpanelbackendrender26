@@ -13,7 +13,7 @@ function isValidObjectId(id) {
 const ALLOWED_FIELDS = [
   "name", "phone", "email", "company", "services", "source",
   "budgetMin", "budgetMax", "requirements", "branch", "assignedTo",
-  "status", "followUpDate", "landingPage", "gstApplicable",
+  "status", "followUpDate", "landingPage", "gstApplicable", "site",
 ];
 
 function pickAllowedFields(body) {
@@ -58,7 +58,7 @@ function dateRangeFilter(dateRange) {
 
 // Helper: build common filter object from query params
 function buildFilter(query) {
-  const { branch, status, source, service, landingPage, q, dateRange } = query;
+  const { branch, status, source, service, landingPage, q, dateRange, site } = query;
   const filter = {};
 
   if (branch)      filter.branch = branch;
@@ -66,6 +66,16 @@ function buildFilter(query) {
   if (source)      filter.source = source;
   if (service)     filter.services = service;
   if (landingPage) filter.landingPage = landingPage;
+  // Site tab filter. "nnc" must also match legacy enquiries created before the
+  // `site` field existed (where site is missing/null) so nothing disappears.
+  if (site === "nnc") {
+    filter.$and = [
+      ...(filter.$and || []),
+      { $or: [{ site: "nnc" }, { site: { $exists: false } }, { site: null }] },
+    ];
+  } else if (site) {
+    filter.site = site;
+  }
 
   if (q && q.trim()) {
     const regex = new RegExp(escapeRegex(q.trim()), "i");
@@ -169,9 +179,14 @@ export async function exportEnquiries(req, res) {
 // ---------------------------------------------------------------------------
 export async function getEnquiryStats(req, res) {
   try {
-    const { branch } = req.query;
+    const { branch, site } = req.query;
     const matchStage = {};
     if (branch) matchStage.branch = branch;
+    if (site === "nnc") {
+      matchStage.$or = [{ site: "nnc" }, { site: { $exists: false } }, { site: null }];
+    } else if (site) {
+      matchStage.site = site;
+    }
 
     const now        = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);

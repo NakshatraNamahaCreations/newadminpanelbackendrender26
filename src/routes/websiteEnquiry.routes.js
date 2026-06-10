@@ -100,6 +100,7 @@ router.post("/", async (req, res) => {
       service, services,
       requirements, message,
       branch, landingPage,
+      site,
     } = req.body;
 
     /* Basic validation */
@@ -114,6 +115,7 @@ router.post("/", async (req, res) => {
     const enquiryBranch    = VALID_BRANCHES.includes(branch) ? branch : "Bangalore";
     const requirementsText = (requirements || message || "").trim();
     const pageLabel        = normalizeLandingPage(landingPage);
+    const enquirySite      = site === "nncdigital" ? "nncdigital" : "nnc";
 
     /* Save enquiry to database */
     const enquiry = await Enquiry.create({
@@ -122,13 +124,14 @@ router.post("/", async (req, res) => {
       email:        (email || "").trim().toLowerCase(),
       services:     serviceList,
       source:       "Website",
+      site:         enquirySite,
       branch:       enquiryBranch,
       requirements: requirementsText,
       landingPage:  pageLabel,
       status:       "new",
       activityLog:  [{
         action: "Enquiry received from website",
-        note:   `Page: ${pageLabel} | Services: ${serviceList.join(", ") || "General"} | ${requirementsText.slice(0, 120)}`,
+        note:   `Site: ${enquirySite === "nncdigital" ? "NNC Digital" : "NNC"} | Page: ${pageLabel} | Services: ${serviceList.join(", ") || "General"} | ${requirementsText.slice(0, 120)}`,
         by:     "Website",
       }],
     });
