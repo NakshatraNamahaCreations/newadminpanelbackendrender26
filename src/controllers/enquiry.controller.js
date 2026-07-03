@@ -13,7 +13,7 @@ function isValidObjectId(id) {
 const ALLOWED_FIELDS = [
   "name", "phone", "email", "company", "services", "source",
   "budgetMin", "budgetMax", "requirements", "branch", "assignedTo",
-  "status", "followUpDate", "landingPage", "gstApplicable", "site",
+  "status", "followUpDate", "landingPage", "gstApplicable", "site", "seen",
 ];
 
 function pickAllowedFields(body) {
@@ -219,6 +219,10 @@ export async function getEnquiryStats(req, res) {
             },
             { $count: "count" },
           ],
+          unseen: [
+            { $match: { seen: { $ne: true } } },
+            { $count: "count" },
+          ],
         },
       },
     ]);
@@ -255,6 +259,7 @@ export async function getEnquiryStats(req, res) {
         byService,
         newThisMonth:   agg.newThisMonth[0]?.count    || 0,
         todayFollowUps: agg.todayFollowUps[0]?.count  || 0,
+        unseen:         agg.unseen[0]?.count          || 0,
       },
     });
   } catch (err) {
@@ -466,6 +471,29 @@ export async function deleteEnquiry(req, res) {
     return res.json({ success: true, message: "Enquiry deleted successfully" });
   } catch (err) {
     console.error("deleteEnquiry error:", err);
+    return res.status(500).json({ success: false, message: err.message || "Server error" });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /api/enquiries/:id/seen  → mark a single enquiry as seen (read)
+// ---------------------------------------------------------------------------
+export async function markSeen(req, res) {
+  try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid enquiry ID" });
+    }
+    const enquiry = await Enquiry.findByIdAndUpdate(
+      req.params.id,
+      { $set: { seen: true } },
+      { new: true }
+    ).lean();
+    if (!enquiry) {
+      return res.status(404).json({ success: false, message: "Enquiry not found" });
+    }
+    return res.json({ success: true, data: enquiry });
+  } catch (err) {
+    console.error("markSeen error:", err);
     return res.status(500).json({ success: false, message: err.message || "Server error" });
   }
 }

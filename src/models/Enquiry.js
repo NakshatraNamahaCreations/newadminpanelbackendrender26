@@ -56,6 +56,8 @@ const EnquirySchema = new mongoose.Schema(
     convertedAt:       { type: Date,    default: null },
     landingPage:       { type: String, default: "", trim: true },
     gstApplicable:     { type: Boolean, default: false },
+    // Unread/new-lead alert: false until an admin opens the enquiry (View).
+    seen:              { type: Boolean, default: false },
     activityLog:       { type: [ActivityLogSchema], default: [] },
   },
   { timestamps: true }
@@ -72,6 +74,7 @@ EnquirySchema.index({ services: 1 });
 EnquirySchema.index({ source: 1, createdAt: -1 });  // source filter + date sort
 EnquirySchema.index({ branch: 1, createdAt: -1 });  // branch filter + date sort
 EnquirySchema.index({ site: 1, createdAt: -1 });    // site (NNC / NNC Digital) tab filter + date sort
+EnquirySchema.index({ seen: 1, site: 1 });          // unseen-count alert per tab
 
 // Text index for search
 EnquirySchema.index(
