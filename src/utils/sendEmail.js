@@ -71,7 +71,7 @@ const fmtErr = (label, err) => {
 };
 
 /**
- * Send an email. Tries Gmail (465 → 587), then Hostinger (465 → 587).
+ * Send an email. Tries Hostinger (465 → 587), then Gmail (465 → 587) as backup.
  * On total failure, throws an Error whose message contains every attempt's
  * underlying error so the caller can surface them in the HTTP response.
  */
@@ -97,17 +97,10 @@ const sendEmail = async ({ to, subject, html, replyTo, cc, bcc, attachments }) =
 
   const errors = [];
 
+  // Hostinger is tried FIRST (it's the account that actually authenticates).
+  // Gmail is kept only as a backup — if its App Password is invalid those
+  // attempts just fail and we've already delivered via Hostinger.
   const attempts = [];
-  if (gmailReady) {
-    gmailTransports().forEach((t, i) => attempts.push({
-      label: `Gmail:${i === 0 ? "465" : "587"}`,
-      transporter: t,
-      from: process.env.GMAIL_USER,
-      transportName: "gmail",
-    }));
-  } else {
-    errors.push("Gmail: not configured (GMAIL_USER/GMAIL_APP_PASS missing)");
-  }
   if (hostingerReady) {
     hostingerTransports().forEach((t, i) => attempts.push({
       label: `Hostinger:${i === 0 ? "465" : "587"}`,
@@ -117,6 +110,16 @@ const sendEmail = async ({ to, subject, html, replyTo, cc, bcc, attachments }) =
     }));
   } else {
     errors.push("Hostinger: not configured (EMAIL_USER/EMAIL_PASS/EMAIL_HOST missing)");
+  }
+  if (gmailReady) {
+    gmailTransports().forEach((t, i) => attempts.push({
+      label: `Gmail:${i === 0 ? "465" : "587"}`,
+      transporter: t,
+      from: process.env.GMAIL_USER,
+      transportName: "gmail",
+    }));
+  } else {
+    errors.push("Gmail: not configured (GMAIL_USER/GMAIL_APP_PASS missing)");
   }
 
   for (const a of attempts) {
